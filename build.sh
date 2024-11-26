@@ -14,17 +14,6 @@ function end_edit {
 	EDITING=""
 }
 
-function update_chksum {
-	FILE=$1
-	PLACE=$2
-
-	MD5_LINE_BEFORE=$( grep "$PLACE" md5sum.txt)
-	MD5_BEFORE=$( echo "$MD5_LINE_BEFORE" | awk '{ print $1 }' )
-	MD5_AFTER=$( md5sum "$FILE" | awk '{ print $1 }' )
-	MD5_LINE_AFTER=$( echo "$MD5_LINE_BEFORE" | sed -e "s#$MD5_BEFORE#$MD5_AFTER#" )
-	sed -i -e "s#$MD5_LINE_BEFORE#$MD5_LINE_AFTER#" md5sum.txt
-}
-
 BASE_URL=https://cdimage.debian.org/debian-cd/current/amd64/iso-cd
 ISO=$( wget -qO - $BASE_URL/SHA512SUMS | grep netinst | grep -v mac | head -n 1 | awk '{ print $2 }' )
 
@@ -33,28 +22,21 @@ if [ ! -f "$ISO" ]; then
 fi
 
 WORKDIR=temp
-rm -Rf $WORKDIR
+sudo rm -Rf $WORKDIR
 mkdir $WORKDIR
 
 ISO_TARGET="$(echo $ISO | sed 's/.iso/-preseed.iso/')"
 
-xorriso -osirrox on -dev "$ISO" \
-	-extract '/isolinux/isolinux.cfg' $WORKDIR/isolinux.cfg \
-	-extract '/md5sum.txt' $WORKDIR/md5sum.txt \
-	-extract '/install.amd/initrd.gz' $WORKDIR/initrd.gz
+xorriso -osirrox on -indev "$ISO" -extract / $WORKDIR
 
-cp preseed.cfg $WORKDIR/
-
-cd $WORKDIR
-
-start_edit "initrd.gz"
-gunzip initrd.gz
-echo "preseed.cfg" | cpio -H newc -o -A -F initrd
-gzip initrd
+start_edit "$WORKDIR/install.amd"
+gunzip "$EDITING/initrd.gz"
+echo "preseed.cfg" | cpio -H newc -o -A -F "$EDITING/initrd"
+gzip "$EDITING/initrd"
 end_edit
 
-start_edit "isolinux.cfg"
-cat > isolinux.cfg <<_EOF
+start_edit "$WORKDIR/isolinux/isolinux.cfg"
+cat > $EDITING <<_EOF
 default vesamenu.c32
 timeout 1
 
@@ -63,25 +45,45 @@ label install
 	menu label ^Install
 	menu default
 	kernel /install.amd/vmlinuz
-	append vga=normal initrd=/install.amd/initrd.gz
+	append vga=788 initrd=/install.amd/initrd.gz
 _EOF
 end_edit
 
-start_edit "md5sum.txt"
-update_chksum initrd.gz "./install.amd/initrd.gz"
+start_edit "$WORKDIR/boot/grub/grub.cfg"
+toSkip=$(grep -Ec '^(menuentry|submenu)' $EDITING)
+cat >> $EDITING <<_EOF
+menuentry 'Automated Install' {
+    set background_color=black
+    linux /install.amd/vmlinuz vga=788 auto=true priority=critical
+    initrd /install.amd/initrd.gz
+}
+set default=${toSkip}
+set timeout=1
+_EOF
 end_edit
 
+start_edit "$WORKDIR/md5sum.txt"
+cd $WORKDIR
+find -follow -type f ! -name md5sum.txt -print0 | xargs -0 md5sum > md5sum.txt
 cd ..
+end_edit
 
 if [ -f $ISO_TARGET ]; then
 	rm $ISO_TARGET
 fi
 
-xorriso -indev $ISO \
-	-map $WORKDIR/initrd.gz '/install.amd/initrd.gz' \
-	-map $WORKDIR/isolinux.cfg '/isolinux/isolinux.cfg' \
-	-map $WORKDIR/md5sum.txt '/md5sum.txt' \
-	-boot_image isolinux dir=/isolinux \
-	-outdev $ISO_TARGET
+xorriso -as mkisofs \
+	-o $ISO_TARGET \
+	-isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+	-c isolinux/boot.cat \
+	-b isolinux/isolinux.bin \
+	-no-emul-boot \
+	-boot-load-size 4 \
+	-boot-info-table \
+	-eltorito-alt-boot \
+	-e boot/grub/efi.img \
+	-no-emul-boot \
+	-isohybrid-gpt-basdat \
+	$WORKDIR
 
-rm -Rf $WORKDIR
+sudo rm -Rf $WORKDIR
