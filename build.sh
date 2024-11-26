@@ -50,14 +50,8 @@ _EOF
 end_edit
 
 start_edit "$WORKDIR/boot/grub/grub.cfg"
-toSkip=$(grep -Ec '^(menuentry|submenu)' $EDITING)
 cat >> $EDITING <<_EOF
-menuentry 'Automated Install' {
-    set background_color=black
-    linux /install.amd/vmlinuz vga=788 auto=true priority=critical
-    initrd /install.amd/initrd.gz
-}
-set default=${toSkip}
+set default=1
 set timeout=1
 _EOF
 end_edit
